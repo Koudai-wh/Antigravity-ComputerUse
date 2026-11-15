@@ -67,7 +67,7 @@ if [[ ! -d ".venv" ]]; then
   elif command -v uv >/dev/null 2>&1; then
     echo "Installing Python 3.11 via uv..."
     uv python install 3.11
-    uv venv --python 3.11 .venv
+    uv venv --seed --python 3.11 .venv
   elif command -v brew >/dev/null 2>&1; then
     echo "Installing python@3.11 via Homebrew..."
     brew install python@3.11
@@ -83,9 +83,24 @@ if [[ ! -d ".venv" ]]; then
 fi
 
 echo "[2/5] Installing runtime and build dependencies (PyInstaller)..."
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/pip install -r requirements.txt
-.venv/bin/pip install "pyinstaller>=6.10.0"
+if ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
+  echo "Bootstrapping pip inside .venv (ensurepip)..."
+  .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+
+if .venv/bin/python -m pip --version >/dev/null 2>&1; then
+  .venv/bin/python -m pip install --upgrade pip
+  .venv/bin/python -m pip install -r requirements.txt
+  .venv/bin/python -m pip install "pyinstaller>=6.10.0"
+elif command -v uv >/dev/null 2>&1; then
+  echo "Using uv pip to install dependencies into .venv..."
+  uv pip install --python .venv/bin/python -r requirements.txt
+  uv pip install --python .venv/bin/python "pyinstaller>=6.10.0"
+else
+  echo "[ERROR] pip is missing inside .venv and neither ensurepip nor uv succeeded."
+  echo "Try deleting .venv and re-running: rm -rf .venv && ./build_mac_app.sh"
+  exit 1
+fi
 
 echo "[3/5] Generating macOS .icns icon from ${ICON_SRC}..."
 if [[ ! -f "${ICON_SRC}" ]]; then

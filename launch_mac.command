@@ -58,7 +58,7 @@ if [ ! -d ".venv" ]; then
     "$PY_BIN" -m venv .venv
   elif command -v uv >/dev/null 2>&1; then
     uv python install 3.11
-    uv venv --python 3.11 .venv
+    uv venv --seed --python 3.11 .venv
   elif command -v brew >/dev/null 2>&1; then
     brew install python@3.11
     PY_BIN="$(find_python)"
@@ -70,8 +70,23 @@ if [ ! -d ".venv" ]; then
     echo "または https://www.python.org/downloads/macos/ からインストールしてください。"
     exit 1
   fi
-  .venv/bin/python -m pip install --upgrade pip
-  .venv/bin/pip install -r requirements.txt
+fi
+
+if ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
+  .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+
+if ! .venv/bin/python -c "import PySide6, mcp, openai" >/dev/null 2>&1; then
+  echo "[セットアップ] 依存パッケージをインストールしています..."
+  if .venv/bin/python -m pip --version >/dev/null 2>&1; then
+    .venv/bin/python -m pip install --upgrade pip
+    .venv/bin/python -m pip install -r requirements.txt
+  elif command -v uv >/dev/null 2>&1; then
+    uv pip install --python .venv/bin/python -r requirements.txt
+  else
+    echo "[エラー] .venv 内に pip が見つかりません。rm -rf .venv してから再実行してください。"
+    exit 1
+  fi
 fi
 
 if [[ "${1:-}" == "--classic" ]]; then
