@@ -39,6 +39,7 @@ class AppRuntime:
         enable_listeners: bool = True,
         dry_run: bool = False,
         overlay_backend: str = "auto",
+        on_gui_event: Any = None,
     ) -> None:
         self.config_path = Path(config_path or DEFAULT_CONFIG_PATH)
         self.config = AppConfig.load(self.config_path)
@@ -56,6 +57,7 @@ class AppRuntime:
             self.safety,
             overlay=self.overlay,
             dry_run=dry_run,
+            on_event=on_gui_event,
         )
         self._enable_listeners = enable_listeners
         self._started = False

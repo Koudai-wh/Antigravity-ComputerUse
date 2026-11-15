@@ -10,3 +10,5 @@ build/
 Thumbs.db
 logs/
 tmp/
+*.spec
+assets/app_icon.icns

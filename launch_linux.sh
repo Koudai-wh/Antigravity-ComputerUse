@@ -8,4 +8,8 @@ if [ ! -d ".venv" ]; then
   .venv/bin/pip install -r requirements.txt
 fi
 
-.venv/bin/python launcher_gui.py
+if [ "${1:-}" = "--classic" ]; then
+  .venv/bin/python launcher_gui.py
+else
+  .venv/bin/python studio_app.py
+fi

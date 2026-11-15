@@ -18,5 +18,10 @@ if [ ! -d ".venv" ]; then
   .venv/bin/pip install -r requirements.txt
 fi
 
-echo "コントロールパネルを起動します..."
-.venv/bin/python launcher_gui.py
+if [[ "${1:-}" == "--classic" ]]; then
+  echo "クラシックコントロールパネルを起動します..."
+  .venv/bin/python launcher_gui.py
+else
+  echo "Antigravity AI Studio を起動します..."
+  .venv/bin/python studio_app.py
+fi

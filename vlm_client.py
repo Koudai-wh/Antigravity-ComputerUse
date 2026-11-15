@@ -194,18 +194,86 @@ def parse_text_tool_calls(content: str) -> list[dict[str, Any]]:
     return calls
 
 
+def fetch_available_models(base_url: str, api_key: str = "EMPTY", timeout: float = 5.0) -> tuple[bool, list[str], str]:
+    """Fetch available models from an OpenAI-compatible /v1/models endpoint."""
+    import httpx
+
+    url = normalize_base_url(base_url)
+    headers = {"Authorization": f"Bearer {api_key or 'EMPTY'}"}
+    try:
+        resp = httpx.get(f"{url}/models", headers=headers, timeout=timeout)
+        if resp.status_code == 200:
+            data = resp.json()
+            models = [str(m.get("id", "")) for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+            return True, models, f"Connected ({len(models)} models)"
+        return False, [], f"HTTP {resp.status_code}: {resp.text[:160]}"
+    except Exception as exc:
+        return False, [], str(exc)
+
+
+def send_chat_completion(
+    base_url: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    api_key: str = "EMPTY",
+    max_tokens: int = 2048,
+    temperature: float = 0.7,
+    timeout_seconds: float = 120.0,
+) -> str:
+    """Send a multi-turn multimodal Chat completion request to an OpenAI-compatible server."""
+    client = OpenAI(
+        base_url=normalize_base_url(base_url),
+        api_key=api_key or "EMPTY",
+        timeout=timeout_seconds,
+    )
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,  # type: ignore[arg-type]
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
 class OpenAIComputerUseAgent:
     """Executes multi-step desktop tasks using an OpenAI-compatible VLM endpoint (llama.cpp / vLLM / etc.)."""
 
-    def __init__(self, runtime: AppRuntime, vlm_config: VLMConfig | None = None) -> None:
+    def __init__(
+        self,
+        runtime: AppRuntime,
+        vlm_config: VLMConfig | None = None,
+        on_status: Any = None,
+        on_step: Any = None,
+    ) -> None:
         self.runtime = runtime
         self.vlm = vlm_config or runtime.config.vlm
+        self.on_status = on_status
+        self.on_step = on_step
         self.client = OpenAI(
             base_url=normalize_base_url(self.vlm.base_url),
             api_key=self.vlm.api_key or "EMPTY",
             timeout=self.vlm.timeout_seconds,
         )
         self._use_native_tools = True
+
+    def _notify_status(self, state: str, detail: str = "") -> None:
+        if self.on_status is not None:
+            try:
+                self.on_status(state, detail)
+            except TypeError:
+                try:
+                    self.on_status(state)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def _notify_step(self, entry: dict[str, Any]) -> None:
+        if self.on_step is not None:
+            try:
+                self.on_step(entry)
+            except Exception:
+                pass
 
     def execute_action(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         ctrl = self.runtime.controller
@@ -285,55 +353,75 @@ class OpenAIComputerUseAgent:
 
         try:
             for step in range(1, max_steps + 1):
-                self.runtime.safety.ensure_can_act()
+                try:
+                    self.runtime.safety.ensure_can_act()
+                except (SafetyAbortError, AppPermissionError) as safety_exc:
+                    self._notify_status("paused", str(safety_exc))
+                    return {
+                        "ok": False,
+                        "steps": step - 1,
+                        "stopped_reason": str(safety_exc),
+                        "history": history,
+                    }
 
+                self._notify_status("capturing", f"Capturing screen (Step {step}/{max_steps})...")
                 content_parts: list[dict[str, Any]] = []
-                if self.vlm.video_mode and self.vlm.video_frames > 1:
-                    seq = self.runtime.controller.take_video_frames(
-                        frame_count=self.vlm.video_frames,
-                        interval_sec=self.vlm.video_interval_sec,
-                        target=target,
-                        image_format="jpeg",
-                        max_width=self.vlm.video_max_width,
-                    )
-                    latest_meta = seq["frames"][-1]["metadata"] if seq["frames"] else {}
-                    content_parts.append(
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Step {step}/{max_steps} ({seq['frame_count']} sequential video frames at "
-                                f"{seq['interval_sec']}s interval, newest last; target={seq['target']}, "
-                                f"active_app={latest_meta.get('active_app')}). Decide the next action or summarize completion."
-                            ),
-                        }
-                    )
-                    for fr in seq["frames"]:
+                try:
+                    if self.vlm.video_mode and self.vlm.video_frames > 1:
+                        seq = self.runtime.controller.take_video_frames(
+                            frame_count=self.vlm.video_frames,
+                            interval_sec=self.vlm.video_interval_sec,
+                            target=target,
+                            image_format="jpeg",
+                            max_width=self.vlm.video_max_width,
+                        )
+                        latest_meta = seq["frames"][-1]["metadata"] if seq["frames"] else {}
                         content_parts.append(
                             {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{fr['mime_type']};base64,{fr['base64']}"},
+                                "type": "text",
+                                "text": (
+                                    f"Step {step}/{max_steps} ({seq['frame_count']} sequential video frames at "
+                                    f"{seq['interval_sec']}s interval, newest last; target={seq['target']}, "
+                                    f"active_app={latest_meta.get('active_app')}). Decide the next action or summarize completion."
+                                ),
                             }
                         )
-                else:
-                    shot = self.runtime.controller.take_screenshot(target=target)
-                    data_url = f"data:{shot['mime_type']};base64,{shot['base64']}"
-                    content_parts.append(
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Step {step}/{max_steps}. Target: {shot['metadata'].get('target')}, "
-                                f"Active app: {shot['metadata'].get('active_app')}. "
-                                "Decide the next action or summarize completion."
-                            ),
-                        }
-                    )
-                    content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                        for fr in seq["frames"]:
+                            content_parts.append(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{fr['mime_type']};base64,{fr['base64']}"},
+                                }
+                            )
+                    else:
+                        shot = self.runtime.controller.take_screenshot(target=target)
+                        data_url = f"data:{shot['mime_type']};base64,{shot['base64']}"
+                        content_parts.append(
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"Step {step}/{max_steps}. Target: {shot['metadata'].get('target')}, "
+                                    f"Active app: {shot['metadata'].get('active_app')}. "
+                                    "Decide the next action or summarize completion."
+                                ),
+                            }
+                        )
+                        content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+                except (SafetyAbortError, AppPermissionError) as safety_exc:
+                    self._notify_status("paused", str(safety_exc))
+                    return {
+                        "ok": False,
+                        "steps": step,
+                        "stopped_reason": str(safety_exc),
+                        "history": history,
+                    }
 
                 messages.append({"role": "user", "content": content_parts})
 
                 # Show spinning "thinking" loader around virtual cursor while VLM reasons
                 if self.runtime.config.overlay.enabled:
                     self.runtime.overlay.set_status("thinking")
+                self._notify_status("thinking", f"Thinking ({self.vlm.model})...")
                 try:
                     resp = self._create_completion(messages)
                 finally:
@@ -359,9 +447,11 @@ class OpenAIComputerUseAgent:
                         parsed_calls.append((None, fc["name"], fc["arguments"]))
 
                 for call_id, name, args in parsed_calls:
+                    self._notify_status("acting", f"{name}({json.dumps(args, ensure_ascii=False)[:48]})...")
                     try:
                         result = {"ok": True, **self.execute_action(name, args)}
                     except (SafetyAbortError, AppPermissionError) as safety_exc:
+                        self._notify_status("paused", str(safety_exc))
                         return {
                             "ok": False,
                             "steps": step,
@@ -371,7 +461,9 @@ class OpenAIComputerUseAgent:
                     except Exception as exc:
                         result = {"ok": False, "error": str(exc)}
 
-                    history.append({"step": step, "tool": name, "args": args, "result": result})
+                    step_entry = {"step": step, "tool": name, "args": args, "result": result}
+                    history.append(step_entry)
+                    self._notify_step(step_entry)
                     if call_id is not None:
                         messages.append(
                             {
@@ -388,8 +480,12 @@ class OpenAIComputerUseAgent:
                             }
                         )
         finally:
-            if self.runtime.config.overlay.enabled and not self.runtime.safety.state.paused:
-                self.runtime.overlay.set_status("idle")
+            if self.runtime.safety.state.paused:
+                self._notify_status("paused", self.runtime.safety.state.pause_reason or "Paused")
+            else:
+                if self.runtime.config.overlay.enabled:
+                    self.runtime.overlay.set_status("idle")
+                self._notify_status("idle", "Completed")
 
         return {"ok": True, "steps": max_steps, "final_response": "Reached max_steps.", "history": history}
 

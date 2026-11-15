@@ -1,28 +1,34 @@
-# Antigravity Computer Use (Local VLM + MCP Desktop Automation)
+# Antigravity AI Studio & Computer Use
 
-OpenAIの「Computer Use」仕様に準拠した、ローカルVLM（OpenAI互換API：`Qwen2.5-VL-7B` / `UI-TARS` 等）および **MCP (Model Context Protocol)** 対応のクロスプラットフォーム・デスクトップ自動操作プラグインです。
+OpenAIの「Computer Use」仕様に準拠したローカルVLM（OpenAI互換API：`llama.cpp` / `Gemma 4 12B` / `Qwen2.5-VL` / `UI-TARS` 等）および **MCP (Model Context Protocol)** を統合した、**macOSネイティブ対応統合デスクトップアプリ (`Antigravity AI Studio.app`)** ＋ 自動操作プラグインです。
 
-AIが操作を行う際は、**`assets/virtual_cursor.png` を用いた透過・最前面・クリック透過の仮想カーソルオーバーレイ**が滑らかに移動し、クリック時の波紋・拡大縮小エフェクトによって人間がリアルタイムで操作位置を視認できます。
+### 主な特徴
+- **統合ネイティブダークUI (`studio_app.py`)**: チャット・Computer Use 自律操作・ファイル出力・MCP管理を1つの PySide6 ネイティブアプリに統合
+- **右上フローティング ミニライブプレビュー (PiP 320×200)**: Computer Use 実行中に現在のキャプチャ映像・`assets/virtual_cursor.png` 位置・クリック波紋・アクション名をリアルタイム描画（折りたたみ/閉じる対応）
+- **ファイル出力カード & エクスポート**: AI応答内のコードブロック / 生成ファイルを検出し、「保存 (Export)」ボタンからネイティブ保存ダイアログ (`QFileDialog`) で `.py` / `.md` / `.txt` / `.csv` / `.json` としてローカル保存可能
+- **ドラッグ＆ドロップ添付**: 画像 (PNG/JPG/WEBP) やテキスト・コードファイルをチャット欄へドラッグ＆ドロップしてそのままVLMへ送信
+- **macOS Retina / Quartz 最適化 ＆ `.app` ビルド**: `Quartz.CoreGraphics` 優先キャプチャと Retina `backing_scale` 自動補正により仮想カーソルと実クリック位置のズレを解消し、`./build_mac_app.sh` で **`Antigravity AI Studio.app`** を生成可能
 
 ---
 
-## 一番カンタンな開き方（ダブルクリック起動）
+## 一番カンタンな開き方（ダブルクリック起動 & `.app` 化）
 
 1. **リポジトリを取得する**
    ```bash
    git clone https://github.com/Koudai-wh/Antigravity-ComputerUse.git
    ```
-   （または GitHub の `Code -> Download ZIP` で解凍）
-2. **そのままダブルクリックして開く**
+2. **そのまま起動する**
    - **macOS**: **`launch_mac.command`** をダブルクリック（※初回のみ右クリック→「開く」で実行）
    - **Windows (UTM仮想マシン含む)**: **`launch_windows.bat`** をダブルクリック
    - **Linux**: **`./launch_linux.sh`** を実行
+   *(従来の簡易コントロールパネルを開く場合は `--classic` を付けて起動できます)*
 
-初回起動時は自動で `.venv` 作成＋依存インストールを行い、**コントロールパネル (`launcher_gui.py`)** が開きます。コントロールパネルから以下がワンクリックで実行できます：
-- **✨ 仮想カーソルデモ再生**（`assets/virtual_cursor.png` の移動・波紋エフェクトを即確認）
-- **🔗 ローカルVLM接続テスト & タスク実行**（`http://100.121.235.97:8000/v1` 等）
-- **📋 MCP設定JSONコピー / Claude Desktop自動登録**
-- **🛡 macOS「画面収録 / アクセシビリティ」設定画面を直接開く**
+3. **macOS 専用アプリ `Antigravity AI Studio.app` をビルドする場合**
+   ```bash
+   chmod +x build_mac_app.sh
+   ./build_mac_app.sh
+   ```
+   `dist/Antigravity AI Studio.app` が生成され、`assets/virtual_cursor.png` がアプリアイコンとして組み込まれます。Finder からダブルクリックで起動でき、macOS の「画面収録」「アクセシビリティ」権限にも独立アプリとして登録されます。
 
 ---
 
@@ -31,18 +37,23 @@ AIが操作を行う際は、**`assets/virtual_cursor.png` を用いた透過・
 ```text
 Antigravity-ComputerUse/
 ├── assets/
-│   └── virtual_cursor.png        # AI専用仮想カーソル画像（アルファ透過PNG）
+│   └── virtual_cursor.png        # AI専用仮想カーソル画像（アルファ透過PNG）& アプリアイコン元画像
 ├── tests/
+│   ├── test_studio_app.py             # Studioアプリ・PiPライブ・ファイル出力・ドラッグ&ドロップ・Retina座標テスト
 │   ├── test_cursor_overlay_visual.py  # 仮想カーソル移動・クリック視覚エフェクト単体テスト
 │   ├── test_mcp_server.py             # MCPツール統合テスト・VLMパーサーテスト
 │   └── test_safety_and_coords.py      # 座標変換・アプリ許可・キルスイッチ・人間優先ロックテスト
+├── studio_app.py                 # Antigravity AI Studio 本体（PySide6統合デスクトップアプリ）
+├── artifact_parser.py            # AI応答内のファイル/コードブロック抽出エンジン
+├── build_mac_app.sh              # PyInstaller による Antigravity AI Studio.app 生成スクリプト
+├── launcher_gui.py               # クラシック簡易コントロールパネル (Tkinter)
 ├── computer_use_mcp.py           # MCPサーバー本体（stdio / sse / streamable-http）
 ├── cursor_overlay.py             # 仮想カーソルオーバーレイ（PySide6 / Tkinter / Headless + IPC）
-├── gui_controller.py             # 画面キャプチャ(mss)・座標変換(0-1000)・日本語入力・アプリ制御
+├── gui_controller.py             # Quartz/mss画面キャプチャ・Retina座標補正・日本語入力・アプリ制御
 ├── safety.py                     # アプリ許可ホワイトリスト・キルスイッチ・人間優先ロック
-├── vlm_client.py                 # OpenAI互換VLM（http://100.121.235 等）自律ループクライアント
+├── vlm_client.py                 # OpenAI互換VLM (/v1/models, Chat, Computer Use自律ループ)
 ├── config.json                   # サーバー・VLM・オーバーレイ・安全制御設定
-├── config_loader.py              # Pydantic設定ローダー（JSON / TOML対応）
+├── config_loader.py              # Pydantic設定ローダー（JSON / TOML / frozen .app対応）
 ├── requirements.txt              # 依存パッケージ一覧
 └── pyproject.toml                # pytest設定・パッケージメタデータ
 ```

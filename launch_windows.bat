@@ -24,6 +24,11 @@ if not exist ".venv\Scripts\python.exe" (
   .venv\Scripts\pip.exe install -r requirements.txt
 )
 
-echo コントロールパネルを起動します...
-.venv\Scripts\python.exe launcher_gui.py
+if "%~1"=="--classic" (
+  echo クラシックコントロールパネルを起動します...
+  .venv\Scripts\python.exe launcher_gui.py
+) else (
+  echo Antigravity AI Studio を起動します...
+  .venv\Scripts\python.exe studio_app.py
+)
 if errorlevel 1 pause

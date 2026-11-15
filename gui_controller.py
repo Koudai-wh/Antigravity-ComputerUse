@@ -20,7 +20,7 @@ from config_loader import AppConfig
 from cursor_overlay import CursorOverlayClient, ease_in_out_cubic
 from safety import SafetyAbortError, SafetyMonitor, get_active_app_name
 
-CoordMode = Literal["normalized", "pixel", "image_pixel"]
+CoordMode = Literal["normalized", "pixel", "image_pixel", "backing_pixel"]
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -50,6 +50,7 @@ class CaptureRegion:
     image_width: int | None = None
     image_height: int | None = None
     normalized_range: int = 1000
+    backing_scale: float = 1.0
 
     @property
     def effective_image_width(self) -> int:
@@ -61,7 +62,7 @@ class CaptureRegion:
 
 
 class CoordinateConverter:
-    """Bidirectional converter between normalized (0..1000), image pixel, and desktop pixel coordinates."""
+    """Bidirectional converter between normalized (0..1000), image pixel, backing pixel, and desktop logical pixel coordinates."""
 
     def __init__(self, region: CaptureRegion) -> None:
         self.region = region
@@ -82,7 +83,13 @@ class CoordinateConverter:
             py = r.top + int(round(float(y) * sy))
             return px, py
 
-        # "pixel": desktop screen coordinates
+        if coord_mode == "backing_pixel":
+            scale = max(0.5, float(r.backing_scale or 1.0))
+            px = r.left + int(round(float(x) / scale))
+            py = r.top + int(round(float(y) / scale))
+            return px, py
+
+        # "pixel": desktop logical screen coordinates
         return int(round(float(x))), int(round(float(y)))
 
     def to_normalized(self, px: float, py: float) -> tuple[float, float]:
@@ -161,6 +168,38 @@ def _get_active_window_bounds() -> tuple[int, int, int, int] | None:
     return None
 
 
+def _get_screen_sharing_window_bounds() -> tuple[int, int, int, int] | None:
+    """Return (left, top, width, height) of the macOS Screen Sharing / VNC window if open."""
+    if sys.platform == "darwin":
+        try:
+            from Quartz import (  # type: ignore
+                CGWindowListCopyWindowInfo,
+                kCGNullWindowID,
+                kCGWindowListExcludeDesktopElements,
+                kCGWindowListOptionOnScreenOnly,
+            )
+
+            windows = CGWindowListCopyWindowInfo(
+                kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+                kCGNullWindowID,
+            )
+            targets = ("screen sharing", "画面共有", "vnc", "utm")
+            for w in windows:
+                if int(w.get("kCGWindowLayer", 1)) != 0:
+                    continue
+                owner = str(w.get("kCGWindowOwnerName", "")).lower()
+                title = str(w.get("kCGWindowName", "")).lower()
+                if any(t in owner or t in title for t in targets):
+                    b = w.get("kCGWindowBounds", {})
+                    width = int(b.get("Width", 0))
+                    height = int(b.get("Height", 0))
+                    if width > 80 and height > 80:
+                        return (int(b.get("X", 0)), int(b.get("Y", 0)), width, height)
+        except Exception:
+            return None
+    return None
+
+
 def _normalize_key_name(key: str) -> str:
     k = key.strip().lower()
     aliases = {
@@ -226,6 +265,72 @@ def _clipboard_set(text: str) -> bool:
         return False
 
 
+def _get_macos_retina_scale() -> float:
+    """Detect macOS Retina backing scale factor (e.g. 2.0 on Retina displays)."""
+    if sys.platform != "darwin":
+        return 1.0
+    try:
+        from Quartz import CGDisplayBounds, CGDisplayPixelsWide, CGMainDisplayID  # type: ignore
+
+        did = CGMainDisplayID()
+        logical_w = float(CGDisplayBounds(did).size.width)
+        pixel_w = float(CGDisplayPixelsWide(did))
+        if logical_w > 0:
+            return round(pixel_w / logical_w, 2)
+    except Exception:
+        pass
+    try:
+        from AppKit import NSScreen  # type: ignore
+
+        scr = NSScreen.mainScreen()
+        if scr is not None:
+            return float(scr.backingScaleFactor())
+    except Exception:
+        pass
+    return 1.0
+
+
+def _capture_macos_quartz(region_dict: dict[str, int]) -> Image.Image | None:
+    """Capture a screen region directly via Quartz.CoreGraphics on macOS."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        from Quartz import (  # type: ignore
+            CGDataProviderCopyData,
+            CGImageGetBytesPerRow,
+            CGImageGetDataProvider,
+            CGImageGetHeight,
+            CGImageGetWidth,
+            CGRectMake,
+            CGWindowListCreateImage,
+            kCGNullWindowID,
+            kCGWindowImageDefault,
+            kCGWindowListOptionOnScreenOnly,
+        )
+
+        rect = CGRectMake(
+            float(region_dict["left"]),
+            float(region_dict["top"]),
+            float(region_dict["width"]),
+            float(region_dict["height"]),
+        )
+        cg_img = CGWindowListCreateImage(
+            rect,
+            kCGWindowListOptionOnScreenOnly,
+            kCGNullWindowID,
+            kCGWindowImageDefault,
+        )
+        if cg_img is None:
+            return None
+        w = int(CGImageGetWidth(cg_img))
+        h = int(CGImageGetHeight(cg_img))
+        bpr = int(CGImageGetBytesPerRow(cg_img))
+        data = bytes(CGDataProviderCopyData(CGImageGetDataProvider(cg_img)))
+        return Image.frombuffer("RGBA", (w, h), data, "raw", "BGRA", bpr, 1).convert("RGB")
+    except Exception:
+        return None
+
+
 class GUIController:
     """Coordinates screen capture, OS input actions, safety guardrails, and virtual cursor overlay."""
 
@@ -235,13 +340,22 @@ class GUIController:
         safety: SafetyMonitor,
         overlay: CursorOverlayClient | None = None,
         dry_run: bool = False,
+        on_event: Any = None,
     ) -> None:
         self.config = config
         self.safety = safety
         self.overlay = overlay
         self.dry_run = dry_run
+        self.on_event = on_event
         self._pyautogui: Any = None
         self._last_region = self._init_default_region()
+
+    def _emit_event(self, kind: str, payload: dict[str, Any]) -> None:
+        if self.on_event is not None:
+            try:
+                self.on_event(kind, payload)
+            except Exception:
+                pass
 
     def _get_pyautogui(self) -> Any:
         if self._pyautogui is None:
@@ -339,6 +453,7 @@ class GUIController:
             hid_overlay = True
             time.sleep(0.03)
 
+        capture_backend = "mss"
         try:
             with (mss.MSS() if hasattr(mss, "MSS") else mss.mss()) as sct:
                 if target == "screen_sharing":
@@ -363,13 +478,21 @@ class GUIController:
                     m = sct.monitors[idx] if 0 <= idx < len(sct.monitors) else sct.monitors[0]
                     region_dict = dict(m)
 
-                raw = sct.grab(region_dict)
-                pil_img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                pil_img = _capture_macos_quartz(region_dict) if sys.platform == "darwin" else None
+                if pil_img is not None:
+                    capture_backend = "quartz"
+                else:
+                    raw = sct.grab(region_dict)
+                    pil_img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
         finally:
             if hid_overlay and self.overlay is not None:
                 self.overlay.show()
 
         orig_w, orig_h = pil_img.size
+        logical_w = max(1, int(region_dict["width"]))
+        detected_scale = round(orig_w / float(logical_w), 2) if orig_w > logical_w else _get_macos_retina_scale()
+        backing_scale = max(1.0, detected_scale)
+
         if mw and orig_w > mw:
             ratio = mw / float(orig_w)
             new_h = max(1, int(round(orig_h * ratio)))
@@ -386,6 +509,7 @@ class GUIController:
             image_width=img_w,
             image_height=img_h,
             normalized_range=self.config.display.normalized_range,
+            backing_scale=backing_scale,
         )
 
         buf = io.BytesIO()
@@ -398,26 +522,43 @@ class GUIController:
 
         raw_bytes = buf.getvalue()
         b64_data = base64.b64encode(raw_bytes).decode("ascii")
+        active_app = get_active_app_name()
+        metadata = {
+            "target": target,
+            "display_index": idx,
+            "active_app": active_app,
+            "capture_backend": capture_backend,
+            "backing_scale": backing_scale,
+            "capture_region": {
+                "left": self._last_region.left,
+                "top": self._last_region.top,
+                "width": self._last_region.width,
+                "height": self._last_region.height,
+            },
+            "original_size": {"width": orig_w, "height": orig_h},
+            "image_size": {"width": img_w, "height": img_h},
+            "normalized_range": self.config.display.normalized_range,
+        }
+        self._emit_event(
+            "screenshot",
+            {
+                "bytes": raw_bytes,
+                "mime_type": mime_type,
+                "width": img_w,
+                "height": img_h,
+                "target": target,
+                "active_app": active_app,
+                "backing_scale": backing_scale,
+                "capture_backend": capture_backend,
+            },
+        )
 
         return {
             "base64": b64_data,
             "bytes": raw_bytes,
             "mime_type": mime_type,
             "format": fmt,
-            "metadata": {
-                "target": target,
-                "display_index": idx,
-                "active_app": get_active_app_name(),
-                "capture_region": {
-                    "left": self._last_region.left,
-                    "top": self._last_region.top,
-                    "width": self._last_region.width,
-                    "height": self._last_region.height,
-                },
-                "original_size": {"width": orig_w, "height": orig_h},
-                "image_size": {"width": img_w, "height": img_h},
-                "normalized_range": self.config.display.normalized_range,
-            },
+            "metadata": metadata,
         }
 
     def take_video_frames(
@@ -553,12 +694,14 @@ class GUIController:
             self._smooth_move_both(px, py, dur)
 
         nx, ny = CoordinateConverter(self._last_region).to_normalized(px, py)
-        return {
+        res = {
             "action": "move_cursor",
             "pixel": {"x": px, "y": py},
             "normalized": {"x": nx, "y": ny},
             "duration": dur,
         }
+        self._emit_event("move", {"nx": nx, "ny": ny, "px": px, "py": py, "label": f"Moving to ({int(nx)}, {int(ny)})..."})
+        return res
 
     def click(
         self,
@@ -590,6 +733,19 @@ class GUIController:
             time.sleep(self.config.actions.action_delay_sec)
 
         nx, ny = CoordinateConverter(self._last_region).to_normalized(px, py)
+        kind_label = "Double-clicking" if clicks >= 2 else ("Right-clicking" if button == "right" else "Clicking")
+        self._emit_event(
+            "click",
+            {
+                "nx": nx,
+                "ny": ny,
+                "px": px,
+                "py": py,
+                "button": button,
+                "clicks": clicks,
+                "label": f"{kind_label} ({int(nx)}, {int(ny)})...",
+            },
+        )
         return {
             "action": "click",
             "button": button,
@@ -639,6 +795,8 @@ class GUIController:
             if self.overlay is not None and self.config.overlay.enabled:
                 self.overlay.set_status("acting")
 
+        nx, ny = CoordinateConverter(self._last_region).to_normalized(ex, ey)
+        self._emit_event("drag", {"nx": nx, "ny": ny, "label": f"Dragging to ({int(nx)}, {int(ny)})..."})
         return {
             "action": "drag",
             "button": button,
@@ -672,6 +830,7 @@ class GUIController:
                     pag.hscroll(int(dx))
             time.sleep(self.config.actions.action_delay_sec)
 
+        self._emit_event("scroll", {"dx": dx, "dy": dy, "label": f"Scrolling (dy={dy})..."})
         return {"action": "scroll", "dx": dx, "dy": dy, "pixel": {"x": px, "y": py}}
 
     def type_text(
@@ -723,6 +882,8 @@ class GUIController:
             else:
                 method = "clipboard_paste" if needs_clipboard else "direct"
 
+        preview = text.replace("\n", " ")[:24]
+        self._emit_event("type_text", {"label": f"Typing [{preview}]..."})
         return {
             "action": "type_text",
             "length": len(text),
@@ -749,6 +910,7 @@ class GUIController:
                     pag.hotkey(*normalized)
             time.sleep(self.config.actions.action_delay_sec)
 
+        self._emit_event("press_hotkey", {"keys": normalized, "label": f"Hotkey [{'+'.join(normalized)}]..."})
         return {"action": "press_hotkey", "keys": normalized}
 
     def focus_app(self, app_name: str, launch_if_not_running: bool = True) -> dict[str, Any]:

@@ -472,6 +472,10 @@ class SafetyMonitor:
                     "Call resume_automation after human control finishes."
                 )
 
+    def trigger_kill_switch(self, reason: str = "manual_kill_switch") -> dict[str, Any]:
+        self._trigger_pause(reason, emergency=True)
+        return self.get_status()
+
     def resume(self) -> dict[str, Any]:
         with self._lock:
             self.state.paused = False

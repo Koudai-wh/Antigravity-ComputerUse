@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.json"
+PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+if getattr(sys, "frozen", False):
+    _USER_DATA_DIR = (
+        Path.home() / "Library" / "Application Support" / "Antigravity AI Studio"
+        if sys.platform == "darwin"
+        else Path.home() / ".antigravity_ai_studio"
+    )
+    DEFAULT_CONFIG_PATH = _USER_DATA_DIR / "config.json"
+else:
+    DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.json"
 
 
 class ServerConfig(BaseModel):
@@ -124,7 +133,11 @@ class AppConfig(BaseModel):
         env_path = os.environ.get("COMPUTER_USE_CONFIG")
         cfg_path = Path(path or env_path or DEFAULT_CONFIG_PATH)
         if not cfg_path.exists():
-            return cls()
+            bundled = PROJECT_ROOT / "config.json"
+            if bundled.exists():
+                cfg_path = bundled
+            else:
+                return cls()
         raw_text = cfg_path.read_text(encoding="utf-8")
         if cfg_path.suffix.lower() == ".toml":
             import tomllib
@@ -136,6 +149,7 @@ class AppConfig(BaseModel):
 
     def save(self, path: str | Path | None = None) -> Path:
         cfg_path = Path(path or DEFAULT_CONFIG_PATH)
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
         cfg_path.write_text(
             json.dumps(self.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

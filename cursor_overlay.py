@@ -829,13 +829,21 @@ class CursorOverlayClient:
             if self._proc is not None and self._proc.poll() is None:
                 return {"ok": True, "enabled": True, "backend": self._active_backend}
 
-            cmd = [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--serve",
-                "--backend",
-                self.backend_preference,
-            ]
+            if getattr(sys, "frozen", False):
+                cmd = [
+                    sys.executable,
+                    "--cursor-overlay-serve",
+                    "--backend",
+                    self.backend_preference,
+                ]
+            else:
+                cmd = [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--serve",
+                    "--backend",
+                    self.backend_preference,
+                ]
             self._proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
