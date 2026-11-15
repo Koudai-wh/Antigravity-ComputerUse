@@ -124,14 +124,22 @@ echo "[4/5] Running PyInstaller..."
   --osx-bundle-identifier "${BUNDLE_ID}" \
   --add-data "assets:assets" \
   --add-data "config.json:." \
-  --collect-all "mcp" \
+  --collect-submodules "mcp.server" \
+  --collect-submodules "mcp.shared" \
+  --collect-submodules "mcp.types" \
+  --exclude-module "mcp.cli" \
   --collect-submodules "uvicorn" \
   --collect-submodules "starlette" \
   --collect-submodules "sse_starlette" \
   --collect-submodules "anyio" \
   --collect-submodules "pynput" \
-  --collect-submodules "Quartz" \
-  --collect-submodules "AppKit" \
+  --hidden-import "mcp" \
+  --hidden-import "Quartz" \
+  --hidden-import "Quartz.CoreGraphics" \
+  --hidden-import "AppKit" \
+  --hidden-import "Foundation" \
+  --hidden-import "Cocoa" \
+  --hidden-import "objc" \
   --hidden-import "mss" \
   --hidden-import "pyautogui" \
   --hidden-import "pyperclip" \
