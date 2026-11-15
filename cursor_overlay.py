@@ -89,7 +89,9 @@ def _apply_windows_click_through(hwnd: int, exclude_from_capture: bool = True) -
 
 def _apply_macos_click_through(qt_or_nsview_ptr: int, exclude_from_capture: bool = True) -> None:
     """Ensure NSWindow ignores mouse events and floats above normal windows on macOS."""
-    if sys.platform != "darwin":
+    if sys.platform != "darwin" or not qt_or_nsview_ptr or qt_or_nsview_ptr < 0x100000:
+        return
+    if os.environ.get("QT_QPA_PLATFORM", "").lower() in ("offscreen", "minimal"):
         return
     try:
         import objc  # type: ignore
@@ -323,6 +325,11 @@ def _create_pyside6_backend(config: OverlayConfig) -> BaseOverlayBackend:
 
         def _apply_native_passthrough(self) -> None:
             try:
+                from PySide6.QtWidgets import QApplication
+
+                qapp = QApplication.instance()
+                if qapp is not None and qapp.platformName().lower() in ("offscreen", "minimal"):
+                    return
                 wid = int(self.winId())
                 excl = bool(self.cfg.exclude_from_capture)
                 if sys.platform == "win32":
