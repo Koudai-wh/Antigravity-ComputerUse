@@ -31,8 +31,8 @@ from install_mcp_config import (
 from safety import check_os_permissions
 
 
-def test_vlm_connection(base_url: str, api_key: str = "EMPTY", timeout: float = 5.0) -> tuple[bool, str]:
-    """Check connectivity to an OpenAI-compatible /v1/models endpoint."""
+def test_vlm_connection(base_url: str, api_key: str = "EMPTY", timeout: float = 5.0) -> tuple[bool, str, list[str]]:
+    """Check connectivity to an OpenAI-compatible /v1/models endpoint (e.g. llama.cpp server)."""
     url = base_url.strip().rstrip("/")
     if not url.endswith("/v1"):
         url = f"{url}/v1"
@@ -41,11 +41,11 @@ def test_vlm_connection(base_url: str, api_key: str = "EMPTY", timeout: float = 
         resp = httpx.get(f"{url}/models", headers=headers, timeout=timeout)
         if resp.status_code == 200:
             data = resp.json()
-            models = [m.get("id", "?") for m in data.get("data", []) if isinstance(m, dict)]
-            return True, f"接続成功 (利用可能モデル: {', '.join(models[:5]) or 'OK'})"
-        return False, f"HTTP {resp.status_code}: {resp.text[:160]}"
+            models = [str(m.get("id", "")) for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+            return True, f"接続成功 (利用可能モデル: {', '.join(models[:5]) or 'OK'})", models
+        return False, f"HTTP {resp.status_code}: {resp.text[:160]}", []
     except Exception as exc:
-        return False, f"接続エラー: {exc}"
+        return False, f"接続エラー: {exc}", []
 
 
 class LauncherApp:
@@ -207,7 +207,9 @@ class LauncherApp:
         self._log(f"[VLMテスト] {url} へ接続中...")
 
         def _worker() -> None:
-            ok, msg = test_vlm_connection(url, self.config.vlm.api_key)
+            ok, msg, models = test_vlm_connection(url, self.config.vlm.api_key)
+            if ok and models:
+                self.root.after(0, lambda m=models[0]: self.var_model.set(m))
             self._log(f"[VLMテスト結果] {'OK' if ok else 'NG'}: {msg}")
 
         threading.Thread(target=_worker, daemon=True).start()

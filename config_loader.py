@@ -21,7 +21,7 @@ class ServerConfig(BaseModel):
 
 
 class VLMConfig(BaseModel):
-    base_url: str = "http://100.121.235:8000/v1"
+    base_url: str = "http://100.121.235.97:8000/v1"
     api_key: str = "EMPTY"
     model: str = "Qwen2.5-VL-7B-Instruct"
     model_preset: str = "qwen2.5-vl"

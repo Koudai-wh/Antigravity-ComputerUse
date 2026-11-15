@@ -20,7 +20,7 @@ AIが操作を行う際は、**`assets/virtual_cursor.png` を用いた透過・
 
 初回起動時は自動で `.venv` 作成＋依存インストールを行い、**コントロールパネル (`launcher_gui.py`)** が開きます。コントロールパネルから以下がワンクリックで実行できます：
 - **✨ 仮想カーソルデモ再生**（`assets/virtual_cursor.png` の移動・波紋エフェクトを即確認）
-- **🔗 ローカルVLM接続テスト & タスク実行**（`http://100.121.235:8000/v1` 等）
+- **🔗 ローカルVLM接続テスト & タスク実行**（`http://100.121.235.97:8000/v1` 等）
 - **📋 MCP設定JSONコピー / Claude Desktop自動登録**
 - **🛡 macOS「画面収録 / アクセシビリティ」設定画面を直接開く**
 
@@ -108,11 +108,11 @@ python computer_use_mcp.py --transport streamable-http --host 127.0.0.1 --port 8
 
 ### 2. ローカルVLM (OpenAI互換API) に直接接続して自律操作させる
 
-`config.json` の `vlm` セクションを設定します（例: `http://100.121.235:8000/v1` / `Qwen2.5-VL-7B-Instruct` や `UI-TARS`）:
+`config.json` の `vlm` セクションを設定します（例: `http://100.121.235.97:8000/v1` / `Qwen2.5-VL-7B-Instruct` や `UI-TARS`）:
 
 ```bash
 python vlm_client.py "メモ帳を開いて『テスト入力』と書いてください" \
-  --base-url http://100.121.235:8000/v1 \
+  --base-url http://100.121.235.97:8000/v1 \
   --model Qwen2.5-VL-7B-Instruct
 ```
 

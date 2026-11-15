@@ -102,3 +102,31 @@ def test_vlm_fallback_tool_parsers() -> None:
     uitars_out = "Thought: click search bar\nAction: left_double(start_box='(512, 128)')"
     parsed2 = parse_text_tool_calls(uitars_out)
     assert parsed2 == [{"name": "click", "arguments": {"x": 512, "y": 128, "button": "left", "clicks": 2}}]
+
+
+def test_llama_cpp_tool_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from vlm_client import OpenAIComputerUseAgent
+
+    rt = AppRuntime(enable_overlay=False, enable_listeners=False, dry_run=True)
+    agent = OpenAIComputerUseAgent(rt)
+    assert rt.config.vlm.base_url == "http://100.121.235.97:8000/v1"
+
+    calls: list[dict] = []
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        if "tools" in kwargs:
+            raise RuntimeError("Error code: 400 - tools require --jinja")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="done", tool_calls=None))]
+        )
+
+    monkeypatch.setattr(agent.client.chat.completions, "create", fake_create)
+    resp = agent._create_completion([{"role": "user", "content": "hi"}])
+    assert resp.choices[0].message.content == "done"
+    assert len(calls) == 2
+    assert "tools" in calls[0]
+    assert "tools" not in calls[1]
+    assert agent._use_native_tools is False
+    rt.stop()

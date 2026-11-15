@@ -6,7 +6,7 @@
     "port": 8765
   },
   "vlm": {
-    "base_url": "http://100.121.235:8000/v1",
+    "base_url": "http://100.121.235.97:8000/v1",
     "api_key": "EMPTY",
     "model": "Qwen2.5-VL-7B-Instruct",
     "model_preset": "qwen2.5-vl",

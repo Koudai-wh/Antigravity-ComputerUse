@@ -144,6 +144,9 @@ SYSTEM_PROMPT = """You are a precise Desktop Computer Use agent.
 You see screenshots of the user's screen and control the desktop via tool calls.
 All coordinates use a normalized 0-1000 coordinate system where (0, 0) is top-left and (1000, 1000) is bottom-right.
 Always inspect the latest screenshot carefully before choosing coordinates.
+If native OpenAI tool calling is unavailable, output a single JSON tool call wrapped in <tool_call>...</tool_call>, e.g.:
+<tool_call>{"name": "click", "arguments": {"x": 500, "y": 300, "button": "left", "clicks": 1}}</tool_call>
+Available tools: click(x, y, button, clicks), move_cursor(x, y), drag(start_x, start_y, end_x, end_y), scroll(x, y, dx, dy), type_text(text, press_enter), press_hotkey(keys), focus_app(app_name), wait(seconds).
 When the user's goal is completely achieved, respond with a concise final summary without calling any tools.
 """
 
@@ -156,7 +159,7 @@ def normalize_base_url(url: str) -> str:
 
 
 def parse_text_tool_calls(content: str) -> list[dict[str, Any]]:
-    """Fallback parser for VLMs (Qwen2.5-VL / UI-TARS) that emit JSON or Action: text instead of OpenAI tool_calls."""
+    """Fallback parser for VLMs (Qwen2.5-VL / UI-TARS / llama.cpp) that emit JSON or Action: text."""
     calls: list[dict[str, Any]] = []
     # 1. <tool_call>{...}</tool_call> or ```json {...} ```
     for match in re.finditer(r"(?:<tool_call>|```json)\s*(\{.*?\})\s*(?:</tool_call>|```)", content, re.DOTALL):
@@ -192,7 +195,7 @@ def parse_text_tool_calls(content: str) -> list[dict[str, Any]]:
 
 
 class OpenAIComputerUseAgent:
-    """Executes multi-step desktop tasks using an OpenAI-compatible VLM endpoint."""
+    """Executes multi-step desktop tasks using an OpenAI-compatible VLM endpoint (llama.cpp / vLLM / etc.)."""
 
     def __init__(self, runtime: AppRuntime, vlm_config: VLMConfig | None = None) -> None:
         self.runtime = runtime
@@ -202,6 +205,7 @@ class OpenAIComputerUseAgent:
             api_key=self.vlm.api_key or "EMPTY",
             timeout=self.vlm.timeout_seconds,
         )
+        self._use_native_tools = True
 
     def execute_action(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         ctrl = self.runtime.controller
@@ -245,6 +249,31 @@ class OpenAIComputerUseAgent:
             return {"action": "wait", "seconds": secs}
         raise ValueError(f"Unknown action: {name}")
 
+    def _create_completion(self, messages: list[dict[str, Any]]) -> Any:
+        """Call chat.completions.create and fall back cleanly if llama.cpp lacks --jinja tools support."""
+        if self._use_native_tools:
+            try:
+                return self.client.chat.completions.create(
+                    model=self.vlm.model,
+                    messages=messages,  # type: ignore[arg-type]
+                    tools=COMPUTER_USE_TOOLS,  # type: ignore[arg-type]
+                    max_tokens=self.vlm.max_tokens,
+                    temperature=self.vlm.temperature,
+                )
+            except Exception as exc:
+                err_txt = str(exc).lower()
+                if any(tok in err_txt for tok in ("tool", "jinja", "400", "422", "unsupported", "template")):
+                    self._use_native_tools = False
+                else:
+                    raise
+
+        return self.client.chat.completions.create(
+            model=self.vlm.model,
+            messages=messages,  # type: ignore[arg-type]
+            max_tokens=self.vlm.max_tokens,
+            temperature=self.vlm.temperature,
+        )
+
     def run_task(self, instruction: str, max_steps: int = 12) -> dict[str, Any]:
         self.runtime.start()
         messages: list[dict[str, Any]] = [
@@ -274,13 +303,7 @@ class OpenAIComputerUseAgent:
                 }
             )
 
-            resp = self.client.chat.completions.create(
-                model=self.vlm.model,
-                messages=messages,  # type: ignore[arg-type]
-                tools=COMPUTER_USE_TOOLS,  # type: ignore[arg-type]
-                max_tokens=self.vlm.max_tokens,
-                temperature=self.vlm.temperature,
-            )
+            resp = self._create_completion(messages)
             msg = resp.choices[0].message
             tool_calls = getattr(msg, "tool_calls", None) or []
 
@@ -321,6 +344,13 @@ class OpenAIComputerUseAgent:
                             "content": json.dumps(result, ensure_ascii=False),
                         }
                     )
+                else:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"Tool `{name}` result: {json.dumps(result, ensure_ascii=False)}",
+                        }
+                    )
 
         return {"ok": True, "steps": max_steps, "final_response": "Reached max_steps.", "history": history}
 
@@ -329,7 +359,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run OpenAI-compatible VLM Computer Use task")
     parser.add_argument("task", help="Task instruction for the VLM agent")
     parser.add_argument("--config", default=None, help="Path to config.json")
-    parser.add_argument("--base-url", default=None, help="Override VLM base URL (e.g. http://100.121.235:8000/v1)")
+    parser.add_argument("--base-url", default=None, help="Override VLM base URL (e.g. http://100.121.235.97:8000/v1)")
     parser.add_argument("--model", default=None, help="Override VLM model name")
     parser.add_argument("--max-steps", type=int, default=12)
     args = parser.parse_args()
