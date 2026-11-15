@@ -131,19 +131,19 @@ def create_mcp_server(runtime: AppRuntime | None = None) -> tuple[_BaseMCPServer
     @mcp.tool()
     def take_screenshot(
         display_index: int | None = None,
-        target: Literal["display", "active_window"] = "display",
+        target: Literal["display", "active_window", "screen_sharing"] = "display",
         image_format: Literal["png", "jpeg"] | None = None,
         max_width: int | None = None,
         include_cursor: bool = False,
     ) -> list[TextContent | ImageContent]:
-        """Capture a screenshot of the specified display or active window and return Base64 image + metadata.
+        """Capture a screenshot of display, active window, or Mac Screen Sharing window.
 
         Args:
             display_index: Monitor index (0=all monitors, 1=primary, 2+=secondary). Defaults to config.
-            target: 'display' for full monitor capture or 'active_window' for focused window bounds.
+            target: 'display', 'active_window', or 'screen_sharing' (macOS Screen Sharing.app window).
             image_format: 'png' or 'jpeg'.
             max_width: Optional max pixel width for downscaling before sending to VLM.
-            include_cursor: If False, hides the virtual cursor overlay during capture.
+            include_cursor: If False, hides the virtual cursor overlay during capture (when hide_during_screenshot=true).
         """
         rt.start()
         try:
@@ -159,6 +159,45 @@ def create_mcp_server(runtime: AppRuntime | None = None) -> tuple[_BaseMCPServer
                 _json_text(meta),
                 ImageContent(type="image", data=res["base64"], mime_type=res["mime_type"]),
             ]
+        except Exception as exc:
+            return _error_payload(exc)
+
+    @mcp.tool()
+    def take_video_frames(
+        frame_count: int = 3,
+        interval_sec: float = 0.25,
+        display_index: int | None = None,
+        target: Literal["display", "active_window", "screen_sharing"] = "display",
+        image_format: Literal["png", "jpeg"] = "jpeg",
+        max_width: int | None = 1280,
+        include_cursor: bool = False,
+    ) -> list[TextContent | ImageContent]:
+        """Capture sequential frames (pseudo-video stream) for video-capable VLMs like Gemma 4 12B."""
+        rt.start()
+        try:
+            res = rt.controller.take_video_frames(
+                frame_count=frame_count,
+                interval_sec=interval_sec,
+                display_index=display_index,
+                target=target,
+                image_format=image_format,
+                max_width=max_width,
+                include_cursor=include_cursor,
+            )
+            items: list[TextContent | ImageContent] = [
+                _json_text(
+                    {
+                        "ok": True,
+                        "frame_count": res["frame_count"],
+                        "interval_sec": res["interval_sec"],
+                        "target": res["target"],
+                        "latest_metadata": res["frames"][-1]["metadata"] if res["frames"] else {},
+                    }
+                )
+            ]
+            for fr in res["frames"]:
+                items.append(ImageContent(type="image", data=fr["base64"], mime_type=fr["mime_type"]))
+            return items
         except Exception as exc:
             return _error_payload(exc)
 
@@ -289,6 +328,24 @@ def create_mcp_server(runtime: AppRuntime | None = None) -> tuple[_BaseMCPServer
             return [_json_text({"ok": True, **res})]
         except Exception as exc:
             return _error_payload(exc)
+
+    @mcp.tool()
+    def connect_screen_sharing(host: str | None = None, port: int = 5900) -> list[TextContent]:
+        """Open or focus macOS Screen Sharing (vnc://host:port) for controlling a remote Mac or VM."""
+        rt.start()
+        try:
+            res = rt.controller.connect_screen_sharing(host=host, port=port)
+            return [_json_text({"ok": True, **res})]
+        except Exception as exc:
+            return _error_payload(exc)
+
+    @mcp.tool()
+    def set_cursor_status(status: Literal["idle", "thinking", "acting", "paused"] = "idle") -> list[TextContent]:
+        """Set virtual cursor visual state ('thinking' shows a spinning loader around the cursor)."""
+        rt.start()
+        if rt.config.overlay.enabled:
+            rt.overlay.set_status(status)
+        return [_json_text({"ok": True, "status": status})]
 
     @mcp.tool()
     def wait(seconds: float = 1.0) -> list[TextContent]:

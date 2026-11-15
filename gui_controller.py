@@ -314,28 +314,43 @@ class GUIController:
     def take_screenshot(
         self,
         display_index: int | None = None,
-        target: Literal["display", "active_window"] = "display",
+        target: Literal["display", "active_window", "screen_sharing"] = "display",
         image_format: Literal["png", "jpeg"] | None = None,
         max_width: int | None = None,
         include_cursor: bool = False,
     ) -> dict[str, Any]:
-        """Capture display or active window via mss and return Base64 image + coordinate metadata."""
+        """Capture display, active window, or Mac Screen Sharing window via mss and return Base64 image."""
         idx = self.config.display.default_display_index if display_index is None else display_index
         fmt = (image_format or self.config.display.screenshot_format).lower()
         if fmt not in ("png", "jpeg"):
             fmt = "png"
         mw = self.config.display.max_screenshot_width if max_width is None else max_width
 
-        # Optionally hide AI overlay briefly so VLM sees unobstructed UI
+        # Only hide overlay if explicitly configured; otherwise rely on OS exclude_from_capture
+        # so the virtual cursor remains visibly pinned on screen without flickering.
         hid_overlay = False
-        if not include_cursor and self.overlay is not None and self.config.overlay.enabled:
+        if (
+            not include_cursor
+            and self.overlay is not None
+            and self.config.overlay.enabled
+            and self.config.overlay.hide_during_screenshot
+        ):
             self.overlay.hide()
             hid_overlay = True
             time.sleep(0.03)
 
         try:
             with (mss.MSS() if hasattr(mss, "MSS") else mss.mss()) as sct:
-                if target == "active_window":
+                if target == "screen_sharing":
+                    bounds = _get_screen_sharing_window_bounds()
+                    if bounds is not None:
+                        left, top, width, height = bounds
+                        region_dict = {"left": left, "top": top, "width": width, "height": height}
+                    else:
+                        m = sct.monitors[idx] if 0 <= idx < len(sct.monitors) else sct.monitors[0]
+                        region_dict = dict(m)
+                        target = "display"
+                elif target == "active_window":
                     bounds = _get_active_window_bounds()
                     if bounds is not None:
                         left, top, width, height = bounds
@@ -403,6 +418,84 @@ class GUIController:
                 "image_size": {"width": img_w, "height": img_h},
                 "normalized_range": self.config.display.normalized_range,
             },
+        }
+
+    def take_video_frames(
+        self,
+        frame_count: int = 3,
+        interval_sec: float = 0.25,
+        display_index: int | None = None,
+        target: Literal["display", "active_window", "screen_sharing"] = "display",
+        image_format: Literal["png", "jpeg"] = "jpeg",
+        max_width: int | None = 1280,
+        include_cursor: bool = False,
+    ) -> dict[str, Any]:
+        """Capture a short sequence of frames for video-capable VLMs like Gemma 4 12B."""
+        count = max(1, min(10, int(frame_count)))
+        delay = max(0.05, min(2.0, float(interval_sec)))
+        frames: list[dict[str, Any]] = []
+        t0 = time.monotonic()
+
+        for i in range(count):
+            self.safety.ensure_can_act()
+            shot = self.take_screenshot(
+                display_index=display_index,
+                target=target,
+                image_format=image_format,
+                max_width=max_width,
+                include_cursor=include_cursor,
+            )
+            frames.append(
+                {
+                    "frame_index": i,
+                    "timestamp_offset_sec": round(time.monotonic() - t0, 3),
+                    "base64": shot["base64"],
+                    "mime_type": shot["mime_type"],
+                    "metadata": shot["metadata"],
+                }
+            )
+            if i < count - 1:
+                time.sleep(delay)
+
+        return {
+            "frame_count": len(frames),
+            "interval_sec": delay,
+            "target": frames[-1]["metadata"]["target"] if frames else target,
+            "frames": frames,
+        }
+
+    def connect_screen_sharing(self, host: str | None = None, port: int = 5900) -> dict[str, Any]:
+        """Open or focus macOS Screen Sharing (or VNC viewer) for remote Mac / VM control."""
+        self.safety.ensure_can_act()
+        self.safety.require_app_allowed("Screen Sharing")
+
+        if self.dry_run:
+            return {"action": "connect_screen_sharing", "host": host, "port": port, "dry_run": True}
+
+        if sys.platform == "darwin":
+            if host and host.strip():
+                clean_host = host.strip()
+                url = clean_host if clean_host.startswith("vnc://") else f"vnc://{clean_host}:{port}"
+                res = subprocess.run(["open", url], capture_output=True, text=True, timeout=5.0)
+                ok = res.returncode == 0
+                detail = f"Opened {url}" if ok else res.stderr.strip()
+            else:
+                res = subprocess.run(["open", "-a", "Screen Sharing"], capture_output=True, text=True, timeout=5.0)
+                ok = res.returncode == 0
+                detail = "Opened Screen Sharing.app" if ok else res.stderr.strip()
+            return {
+                "action": "connect_screen_sharing",
+                "host": host,
+                "port": port,
+                "opened": ok,
+                "detail": detail,
+                "screen_sharing_bounds": _get_screen_sharing_window_bounds(),
+            }
+
+        return {
+            "action": "connect_screen_sharing",
+            "opened": False,
+            "detail": "Built-in Screen Sharing launcher is macOS-specific; focus your VNC/RDP window via focus_app.",
         }
 
     def resolve_coordinates(self, x: float, y: float, coord_mode: CoordMode = "normalized") -> tuple[int, int]:

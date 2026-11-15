@@ -281,76 +281,115 @@ class OpenAIComputerUseAgent:
             {"role": "user", "content": instruction},
         ]
         history: list[dict[str, Any]] = []
+        target = self.vlm.capture_target
 
-        for step in range(1, max_steps + 1):
-            self.runtime.safety.ensure_can_act()
-            shot = self.runtime.controller.take_screenshot()
-            data_url = f"data:{shot['mime_type']};base64,{shot['base64']}"
+        try:
+            for step in range(1, max_steps + 1):
+                self.runtime.safety.ensure_can_act()
 
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
+                content_parts: list[dict[str, Any]] = []
+                if self.vlm.video_mode and self.vlm.video_frames > 1:
+                    seq = self.runtime.controller.take_video_frames(
+                        frame_count=self.vlm.video_frames,
+                        interval_sec=self.vlm.video_interval_sec,
+                        target=target,
+                        image_format="jpeg",
+                        max_width=self.vlm.video_max_width,
+                    )
+                    latest_meta = seq["frames"][-1]["metadata"] if seq["frames"] else {}
+                    content_parts.append(
                         {
                             "type": "text",
                             "text": (
-                                f"Step {step}/{max_steps}. Active app: {shot['metadata'].get('active_app')}. "
+                                f"Step {step}/{max_steps} ({seq['frame_count']} sequential video frames at "
+                                f"{seq['interval_sec']}s interval, newest last; target={seq['target']}, "
+                                f"active_app={latest_meta.get('active_app')}). Decide the next action or summarize completion."
+                            ),
+                        }
+                    )
+                    for fr in seq["frames"]:
+                        content_parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{fr['mime_type']};base64,{fr['base64']}"},
+                            }
+                        )
+                else:
+                    shot = self.runtime.controller.take_screenshot(target=target)
+                    data_url = f"data:{shot['mime_type']};base64,{shot['base64']}"
+                    content_parts.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Step {step}/{max_steps}. Target: {shot['metadata'].get('target')}, "
+                                f"Active app: {shot['metadata'].get('active_app')}. "
                                 "Decide the next action or summarize completion."
                             ),
-                        },
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                }
-            )
+                        }
+                    )
+                    content_parts.append({"type": "image_url", "image_url": {"url": data_url}})
 
-            resp = self._create_completion(messages)
-            msg = resp.choices[0].message
-            tool_calls = getattr(msg, "tool_calls", None) or []
+                messages.append({"role": "user", "content": content_parts})
 
-            parsed_calls: list[tuple[str | None, str, dict[str, Any]]] = []
-            if tool_calls:
-                messages.append(msg.model_dump(exclude_none=True))
-                for tc in tool_calls:
-                    args = json.loads(tc.function.arguments or "{}")
-                    parsed_calls.append((tc.id, tc.function.name, args))
-            else:
-                text = msg.content or ""
-                messages.append({"role": "assistant", "content": text})
-                fallback = parse_text_tool_calls(text)
-                if not fallback:
-                    return {"ok": True, "steps": step, "final_response": text, "history": history}
-                for fc in fallback:
-                    parsed_calls.append((None, fc["name"], fc["arguments"]))
-
-            for call_id, name, args in parsed_calls:
+                # Show spinning "thinking" loader around virtual cursor while VLM reasons
+                if self.runtime.config.overlay.enabled:
+                    self.runtime.overlay.set_status("thinking")
                 try:
-                    result = {"ok": True, **self.execute_action(name, args)}
-                except (SafetyAbortError, AppPermissionError) as safety_exc:
-                    return {
-                        "ok": False,
-                        "steps": step,
-                        "stopped_reason": str(safety_exc),
-                        "history": history,
-                    }
-                except Exception as exc:
-                    result = {"ok": False, "error": str(exc)}
+                    resp = self._create_completion(messages)
+                finally:
+                    if self.runtime.config.overlay.enabled and not self.runtime.safety.state.paused:
+                        self.runtime.overlay.set_status("acting")
 
-                history.append({"step": step, "tool": name, "args": args, "result": result})
-                if call_id is not None:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": json.dumps(result, ensure_ascii=False),
-                        }
-                    )
+                msg = resp.choices[0].message
+                tool_calls = getattr(msg, "tool_calls", None) or []
+
+                parsed_calls: list[tuple[str | None, str, dict[str, Any]]] = []
+                if tool_calls:
+                    messages.append(msg.model_dump(exclude_none=True))
+                    for tc in tool_calls:
+                        args = json.loads(tc.function.arguments or "{}")
+                        parsed_calls.append((tc.id, tc.function.name, args))
                 else:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"Tool `{name}` result: {json.dumps(result, ensure_ascii=False)}",
+                    text = msg.content or ""
+                    messages.append({"role": "assistant", "content": text})
+                    fallback = parse_text_tool_calls(text)
+                    if not fallback:
+                        return {"ok": True, "steps": step, "final_response": text, "history": history}
+                    for fc in fallback:
+                        parsed_calls.append((None, fc["name"], fc["arguments"]))
+
+                for call_id, name, args in parsed_calls:
+                    try:
+                        result = {"ok": True, **self.execute_action(name, args)}
+                    except (SafetyAbortError, AppPermissionError) as safety_exc:
+                        return {
+                            "ok": False,
+                            "steps": step,
+                            "stopped_reason": str(safety_exc),
+                            "history": history,
                         }
-                    )
+                    except Exception as exc:
+                        result = {"ok": False, "error": str(exc)}
+
+                    history.append({"step": step, "tool": name, "args": args, "result": result})
+                    if call_id is not None:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call_id,
+                                "content": json.dumps(result, ensure_ascii=False),
+                            }
+                        )
+                    else:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": f"Tool `{name}` result: {json.dumps(result, ensure_ascii=False)}",
+                            }
+                        )
+        finally:
+            if self.runtime.config.overlay.enabled and not self.runtime.safety.state.paused:
+                self.runtime.overlay.set_status("idle")
 
         return {"ok": True, "steps": max_steps, "final_response": "Reached max_steps.", "history": history}
 
@@ -361,6 +400,10 @@ def main() -> int:
     parser.add_argument("--config", default=None, help="Path to config.json")
     parser.add_argument("--base-url", default=None, help="Override VLM base URL (e.g. http://100.121.235.97:8000/v1)")
     parser.add_argument("--model", default=None, help="Override VLM model name")
+    parser.add_argument("--target", choices=["display", "active_window", "screen_sharing"], default=None)
+    parser.add_argument("--video", dest="video_mode", action="store_true", default=None, help="Send sequential video frames")
+    parser.add_argument("--no-video", dest="video_mode", action="store_false", help="Send single screenshot per step")
+    parser.add_argument("--frames", type=int, default=None, help="Number of frames per step in video mode")
     parser.add_argument("--max-steps", type=int, default=12)
     args = parser.parse_args()
 
@@ -369,6 +412,12 @@ def main() -> int:
         runtime.config.vlm.base_url = args.base_url
     if args.model:
         runtime.config.vlm.model = args.model
+    if args.target:
+        runtime.config.vlm.capture_target = args.target
+    if args.video_mode is not None:
+        runtime.config.vlm.video_mode = args.video_mode
+    if args.frames is not None:
+        runtime.config.vlm.video_frames = args.frames
 
     agent = OpenAIComputerUseAgent(runtime)
     try:

@@ -51,20 +51,29 @@ def test_vlm_connection(base_url: str, api_key: str = "EMPTY", timeout: float = 
 class LauncherApp:
     """Cross-platform Tkinter Control Panel (works on macOS, Windows, and Linux/Xvfb)."""
 
-    def __init__(self, root: tk.Tk, config_path: Path = DEFAULT_CONFIG_PATH) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        config_path: Path = DEFAULT_CONFIG_PATH,
+        auto_start_overlay: bool = True,
+    ) -> None:
         self.root = root
         self.config_path = config_path
         self.config = AppConfig.load(config_path)
 
         self.root.title("Antigravity Computer Use - コントロールパネル")
-        self.root.geometry("760x680")
-        self.root.minsize(680, 580)
+        self.root.geometry("790x730")
+        self.root.minsize(700, 620)
 
         self._mcp_proc: subprocess.Popen[str] | None = None
         self._vlm_proc: subprocess.Popen[str] | None = None
+        self._overlay_proc: subprocess.Popen[str] | None = None
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        if auto_start_overlay and self.config.overlay.enabled and self.config.overlay.always_visible:
+            self._start_resident_overlay()
 
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
@@ -76,7 +85,7 @@ class LauncherApp:
         notebook.add(tab_main, text="🤖 AI操作・仮想カーソル")
 
         # VLM connection box
-        vlm_frame = ttk.LabelFrame(tab_main, text="ローカルVLM接続先 (OpenAI互換API)")
+        vlm_frame = ttk.LabelFrame(tab_main, text="ローカルVLM接続先 (OpenAI互換API / llama.cpp)")
         vlm_frame.pack(fill="x", **pad)
 
         ttk.Label(vlm_frame, text="API URL:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
@@ -92,13 +101,48 @@ class LauncherApp:
             row=1, column=1, sticky="ew", padx=4, pady=4
         )
         ttk.Button(vlm_frame, text="設定保存", command=self._on_save_config).grid(row=1, column=2, padx=6, pady=4)
+
+        opts_row = ttk.Frame(vlm_frame)
+        opts_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=6, pady=(2, 6))
+        self.var_video_mode = tk.BooleanVar(value=self.config.vlm.video_mode)
+        ttk.Checkbutton(
+            opts_row,
+            text="🎬 連続フレーム（映像）認識モード [Gemma 4向け]",
+            variable=self.var_video_mode,
+        ).pack(side="left", padx=(0, 12))
+        ttk.Label(opts_row, text="キャプチャ対象:").pack(side="left", padx=(0, 4))
+        self.var_target = tk.StringVar(value=self.config.vlm.capture_target)
+        ttk.Combobox(
+            opts_row,
+            textvariable=self.var_target,
+            values=["display", "screen_sharing", "active_window"],
+            state="readonly",
+            width=16,
+        ).pack(side="left")
+
         vlm_frame.columnconfigure(1, weight=1)
 
+        # Mac Screen Sharing box
+        vnc_frame = ttk.LabelFrame(tab_main, text="Mac 画面共有 / VNC 連携")
+        vnc_frame.pack(fill="x", **pad)
+        ttk.Label(vnc_frame, text="接続先ホスト (例: 192.168.64.2 / macmini.local):").pack(
+            side="left", padx=6, pady=6
+        )
+        self.var_vnc_host = tk.StringVar(value="")
+        ttk.Entry(vnc_frame, textvariable=self.var_vnc_host, width=26).pack(
+            side="left", fill="x", expand=True, padx=4, pady=6
+        )
+        ttk.Button(vnc_frame, text="🖥 Mac画面共有を開く", command=self._on_open_screen_sharing).pack(
+            side="right", padx=6, pady=6
+        )
+
         # Task runner box
-        task_frame = ttk.LabelFrame(tab_main, text="自律操作タスク実行")
+        task_frame = ttk.LabelFrame(tab_main, text="自律操作タスク実行・仮想カーソル表示")
         task_frame.pack(fill="x", **pad)
 
-        ttk.Label(task_frame, text="指示内容 (例: メモ帳を開いて『テスト』と入力):").pack(anchor="w", padx=6, pady=(4, 2))
+        ttk.Label(task_frame, text="指示内容 (例: 画面共有のウィンドウを開いて操作して):").pack(
+            anchor="w", padx=6, pady=(4, 2)
+        )
         self.var_task = tk.StringVar(value="画面を確認して現在の状態を教えてください")
         ttk.Entry(task_frame, textvariable=self.var_task).pack(fill="x", padx=6, pady=4)
 
@@ -108,7 +152,11 @@ class LauncherApp:
         self.btn_run_task.pack(side="left", padx=(0, 6))
         self.btn_stop_task = ttk.Button(btn_row, text="⏹ 緊急停止", command=self._on_stop_vlm_task)
         self.btn_stop_task.pack(side="left", padx=(0, 6))
-        ttk.Button(btn_row, text="✨ 仮想カーソルデモ再生", command=self._on_run_cursor_demo).pack(side="right")
+        self.btn_overlay_toggle = ttk.Button(
+            btn_row, text="👁 カーソル常時表示: OFF", command=self._on_toggle_resident_overlay
+        )
+        self.btn_overlay_toggle.pack(side="right", padx=(6, 0))
+        ttk.Button(btn_row, text="✨ デモ(ぐるぐる+クリック)", command=self._on_run_cursor_demo).pack(side="right")
 
         # MCP server box
         mcp_frame = ttk.LabelFrame(tab_main, text="MCPサーバー連携 (Claude Desktop / Cursor / Antigravity)")
@@ -199,8 +247,51 @@ class LauncherApp:
     def _on_save_config(self) -> None:
         self.config.vlm.base_url = self.var_base_url.get().strip()
         self.config.vlm.model = self.var_model.get().strip()
+        self.config.vlm.video_mode = bool(self.var_video_mode.get())
+        self.config.vlm.capture_target = self.var_target.get()  # type: ignore[assignment]
         self.config.save(self.config_path)
         self._log(f"[設定保存] {self.config_path} を更新しました。")
+
+    def _start_resident_overlay(self) -> None:
+        if self._overlay_proc is not None and self._overlay_proc.poll() is None:
+            return
+        self._overlay_proc = subprocess.Popen(
+            [sys.executable, str(PROJECT_ROOT / "cursor_overlay.py"), "--always-on"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.btn_overlay_toggle.configure(text="👁 カーソル常時表示: ON")
+        self._log("[カーソル] 仮想カーソルを画面上に常時表示しました。")
+
+    def _stop_resident_overlay(self) -> None:
+        if self._overlay_proc is not None and self._overlay_proc.poll() is None:
+            try:
+                self._overlay_proc.terminate()
+            except Exception:
+                pass
+        self._overlay_proc = None
+        self.btn_overlay_toggle.configure(text="👁 カーソル常時表示: OFF")
+
+    def _on_toggle_resident_overlay(self) -> None:
+        if self._overlay_proc is not None and self._overlay_proc.poll() is None:
+            self._stop_resident_overlay()
+            self._log("[カーソル] 常時表示をOFFにしました。")
+        else:
+            self._start_resident_overlay()
+
+    def _on_open_screen_sharing(self) -> None:
+        host = self.var_vnc_host.get().strip()
+        if sys.platform == "darwin":
+            if host:
+                url = host if host.startswith("vnc://") else f"vnc://{host}"
+                subprocess.Popen(["open", url])
+                self._log(f"[画面共有] Mac 画面共有を起動しました: {url}")
+            else:
+                subprocess.Popen(["open", "-a", "Screen Sharing"])
+                self._log("[画面共有] Mac 画面共有アプリを起動しました。")
+            self.var_target.set("screen_sharing")
+        else:
+            self._log("[画面共有] macOS標準の画面共有(Screen Sharing.app)はmacOS上で動作します。別OSではVNCウィンドウを選択してください。")
 
     def _on_test_vlm(self) -> None:
         url = self.var_base_url.get().strip()
@@ -215,7 +306,7 @@ class LauncherApp:
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_run_cursor_demo(self) -> None:
-        self._log("[デモ] 仮想カーソルオーバーレイデモを起動します (assets/virtual_cursor.png)...")
+        self._log("[デモ] 仮想カーソルデモを起動します（思考中ぐるぐる → 移動 → クリック波紋）...")
         subprocess.Popen([sys.executable, str(PROJECT_ROOT / "cursor_overlay.py"), "--demo"])
 
     def _on_run_vlm_task(self) -> None:
@@ -226,13 +317,20 @@ class LauncherApp:
         task = self.var_task.get().strip()
         if not task:
             return
-        self._log(f"[VLM開始] タスク: {task}")
+        # Temporarily yield resident overlay while vlm_client runs its active interactive overlay
+        was_resident = self._overlay_proc is not None and self._overlay_proc.poll() is None
+        if was_resident:
+            self._stop_resident_overlay()
+        self._log(f"[VLM開始] タスク: {task} (target={self.var_target.get()}, video={self.var_video_mode.get()})")
         cmd = [
             sys.executable,
             str(PROJECT_ROOT / "vlm_client.py"),
             task,
             "--config",
             str(self.config_path),
+            "--target",
+            self.var_target.get(),
+            "--video" if self.var_video_mode.get() else "--no-video",
         ]
         self._vlm_proc = subprocess.Popen(
             cmd,
@@ -248,6 +346,8 @@ class LauncherApp:
                 self._log(line.rstrip())
             rc = self._vlm_proc.wait()
             self._log(f"[VLM終了] exit_code={rc}")
+            if was_resident:
+                self.root.after(0, self._start_resident_overlay)
 
         threading.Thread(target=_reader, daemon=True).start()
 
@@ -320,7 +420,7 @@ class LauncherApp:
         self._log(f"[安全設定] 許可アプリを削除: {name}")
 
     def _on_close(self) -> None:
-        for proc in (self._mcp_proc, self._vlm_proc):
+        for proc in (self._mcp_proc, self._vlm_proc, self._overlay_proc):
             if proc is not None and proc.poll() is None:
                 try:
                     proc.terminate()

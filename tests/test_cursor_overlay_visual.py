@@ -58,18 +58,19 @@ def test_headless_overlay_move_and_click_render() -> None:
     backend.trigger_click(320, 240, button="left", clicks=1)
     backend.trigger_click(500, 360, button="right", clicks=1)
     backend.trigger_click(620, 420, button="left", clicks=2)
+    backend.set_status("thinking")
     assert len(backend.state.ripples) == 3
 
     frame = backend.render_preview_frame(800, 600)
     assert frame.size == (800, 600)
-    # Verify non-uniform pixels around the cursor/ripple location
+    # Verify non-uniform pixels around the cursor/ripple/spinner location
     crop = frame.crop((570, 370, 670, 470))
     colors = crop.getcolors(maxcolors=20000)
     assert colors is not None and len(colors) > 5
 
 
 def test_pyside6_offscreen_overlay_move_and_click() -> None:
-    """Verify PySide6 QWidget overlay initializes, moves smoothly, and renders click ripples."""
+    """Verify PySide6 QWidget overlay initializes, moves smoothly, spins when thinking, and renders ripples."""
     env_backup = os.environ.get("QT_QPA_PLATFORM")
     # Use offscreen if no X11/xcb-cursor0 is available
     if sys.platform.startswith("linux") and not env_backup:
@@ -82,6 +83,10 @@ def test_pyside6_offscreen_overlay_move_and_click() -> None:
         st = overlay.get_state()
         assert abs(st["x"] - 250.0) < 2.0
         assert abs(st["y"] - 180.0) < 2.0
+
+        overlay.set_status("thinking")
+        overlay.process_events()
+        assert overlay.get_state()["status"] == "thinking"
 
         overlay.trigger_click(250, 180, button="left", clicks=1)
         overlay.trigger_click(420, 310, button="left", clicks=2)
@@ -96,7 +101,7 @@ def test_pyside6_offscreen_overlay_move_and_click() -> None:
 
 
 def test_ipc_overlay_client_move_and_click() -> None:
-    """Spawn cursor_overlay.py --serve over IPC, move cursor, trigger clicks, and shut down cleanly."""
+    """Spawn cursor_overlay.py --serve over IPC, test thinking spinner, move, clicks, and clean exit."""
     cfg = AppConfig.load().overlay
     cfg.move_duration_sec = 0.08
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or sys.platform in ("darwin", "win32"))
@@ -106,6 +111,9 @@ def test_ipc_overlay_client_move_and_click() -> None:
     try:
         info = client.start()
         assert info.get("ok") is True, f"Overlay failed to start: {info}"
+
+        client.set_status("thinking")
+        assert client.get_state()["state"]["status"] == "thinking"
 
         r1 = client.move_to(240, 200, duration=0.08, wait=True)
         assert r1.get("ok") is True

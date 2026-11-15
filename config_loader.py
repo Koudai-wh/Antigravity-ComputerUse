@@ -23,12 +23,17 @@ class ServerConfig(BaseModel):
 class VLMConfig(BaseModel):
     base_url: str = "http://100.121.235.97:8000/v1"
     api_key: str = "EMPTY"
-    model: str = "Qwen2.5-VL-7B-Instruct"
-    model_preset: str = "qwen2.5-vl"
+    model: str = "gemma-4-12b"
+    model_preset: str = "gemma4"
     coordinate_system: Literal["normalized_1000", "pixel"] = "normalized_1000"
     max_tokens: int = 1024
     temperature: float = 0.1
     timeout_seconds: float = 60.0
+    video_mode: bool = True
+    video_frames: int = 3
+    video_interval_sec: float = 0.25
+    video_max_width: int = 1280
+    capture_target: Literal["display", "active_window", "screen_sharing"] = "display"
 
 
 class DisplayConfig(BaseModel):
@@ -51,6 +56,9 @@ class ClickEffectConfig(BaseModel):
 
 class OverlayConfig(BaseModel):
     enabled: bool = True
+    always_visible: bool = True
+    hide_during_screenshot: bool = False
+    exclude_from_capture: bool = True
     cursor_image_path: str = "assets/virtual_cursor.png"
     cursor_size: int = 48
     hotspot_ratio_x: float = 0.789
@@ -61,6 +69,8 @@ class OverlayConfig(BaseModel):
     opacity: float = 0.96
     show_label: bool = True
     label_text: str = "AI"
+    thinking_spinner_color: str = "#38BDF8"
+    thinking_spinner_accent: str = "#A855F7"
     click_effect: ClickEffectConfig = Field(default_factory=ClickEffectConfig)
     idle_fade_seconds: float = 0.0
 

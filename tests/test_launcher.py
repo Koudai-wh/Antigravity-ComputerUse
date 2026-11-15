@@ -36,6 +36,8 @@ def test_launcher_gui_constructs_under_display() -> None:
     from launcher_gui import LauncherApp
 
     root = tk.Tk()
-    app = LauncherApp(root)
+    app = LauncherApp(root, auto_start_overlay=False)
     assert app.var_base_url.get().startswith("http://")
+    assert app.var_video_mode.get() is True
+    assert app.var_target.get() in ("display", "screen_sharing", "active_window")
     app._on_close()

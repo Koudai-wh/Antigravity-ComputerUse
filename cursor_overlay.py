@@ -62,7 +62,7 @@ class OverlayState:
     ripples: list[RippleEffect] = field(default_factory=list)
 
 
-def _apply_windows_click_through(hwnd: int) -> None:
+def _apply_windows_click_through(hwnd: int, exclude_from_capture: bool = True) -> None:
     """Force WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE on Windows."""
     if sys.platform != "win32" or not hwnd:
         return
@@ -80,11 +80,14 @@ def _apply_windows_click_through(hwnd: int) -> None:
             GWL_EXSTYLE,
             style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         )
+        if exclude_from_capture:
+            # WDA_EXCLUDEFROMCAPTURE = 0x00000011 -> visible to humans, hidden from screen capture
+            user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
     except Exception:
         pass
 
 
-def _apply_macos_click_through(qt_or_nsview_ptr: int) -> None:
+def _apply_macos_click_through(qt_or_nsview_ptr: int, exclude_from_capture: bool = True) -> None:
     """Ensure NSWindow ignores mouse events and floats above normal windows on macOS."""
     if sys.platform != "darwin":
         return
@@ -98,6 +101,9 @@ def _apply_macos_click_through(qt_or_nsview_ptr: int) -> None:
             ns_win.setIgnoresMouseEvents_(True)
             ns_win.setLevel_(NSFloatingWindowLevel + 2)
             ns_win.setCollectionBehavior_(NSWindowCollectionBehaviorCanJoinAllSpaces)
+            if exclude_from_capture and hasattr(ns_win, "setSharingType_"):
+                # NSWindowSharingNone = 0 -> stays always visible on monitor, excluded from capture
+                ns_win.setSharingType_(0)
     except Exception:
         pass
 
@@ -318,10 +324,11 @@ def _create_pyside6_backend(config: OverlayConfig) -> BaseOverlayBackend:
         def _apply_native_passthrough(self) -> None:
             try:
                 wid = int(self.winId())
+                excl = bool(self.cfg.exclude_from_capture)
                 if sys.platform == "win32":
-                    _apply_windows_click_through(wid)
+                    _apply_windows_click_through(wid, exclude_from_capture=excl)
                 elif sys.platform == "darwin":
-                    _apply_macos_click_through(wid)
+                    _apply_macos_click_through(wid, exclude_from_capture=excl)
                 else:
                     _apply_x11_click_through(wid)
             except Exception:
@@ -374,6 +381,9 @@ def _create_pyside6_backend(config: OverlayConfig) -> BaseOverlayBackend:
             now = time.monotonic()
             dirty = False
 
+            if self.state.status == "thinking":
+                dirty = True
+
             if self._anim_active:
                 elapsed = now - self._anim_start_t
                 t = min(1.0, elapsed / max(0.001, self._anim_duration))
@@ -418,6 +428,35 @@ def _create_pyside6_backend(config: OverlayConfig) -> BaseOverlayBackend:
             cx, cy = self._center, self._center
             now = time.monotonic()
 
+            # 0. Draw spinning "thinking" indicator (ぐるぐるスピナー) when VLM is reasoning
+            if self.state.status == "thinking":
+                angle_deg = (now * 420.0) % 360.0
+                r_outer = max(20.0, self.cfg.cursor_size * 0.56)
+                r_inner = max(14.0, r_outer - 6.0)
+
+                # Subtle translucent halo ring
+                halo = QColor(self.cfg.thinking_spinner_color)
+                halo.setAlpha(45)
+                painter.setPen(QPen(halo, 3.0))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(QPointF(cx, cy), r_outer, r_outer)
+
+                # Primary spinning arc
+                c_main = QColor(self.cfg.thinking_spinner_color)
+                c_main.setAlpha(235)
+                pen_main = QPen(c_main, 3.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen_main)
+                outer_rect = QRectF(cx - r_outer, cy - r_outer, r_outer * 2.0, r_outer * 2.0)
+                painter.drawArc(outer_rect, int(-angle_deg * 16), int(-245 * 16))
+
+                # Counter-rotating inner accent arc
+                c_acc = QColor(self.cfg.thinking_spinner_accent)
+                c_acc.setAlpha(215)
+                pen_acc = QPen(c_acc, 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen_acc)
+                inner_rect = QRectF(cx - r_inner, cy - r_inner, r_inner * 2.0, r_inner * 2.0)
+                painter.drawArc(inner_rect, int(angle_deg * 1.35 * 16), int(140 * 16))
+
             # 1. Draw click ripple animations centered on the cursor hotspot
             for r in self.state.ripples:
                 prog = min(1.0, max(0.0, (now - r.started_at) / max(0.05, r.duration_sec)))
@@ -447,7 +486,8 @@ def _create_pyside6_backend(config: OverlayConfig) -> BaseOverlayBackend:
                     painter.drawEllipse(QPointF(cx, cy), rad2, rad2)
 
             # 2. Draw virtual cursor image anchored so its hotspot lands at (cx, cy)
-            size = self.cfg.cursor_size * self.state.scale
+            pulse_breath = 1.0 + 0.05 * math.sin(now * 6.5) if self.state.status == "thinking" else 1.0
+            size = self.cfg.cursor_size * self.state.scale * pulse_breath
             hx = size * self.cfg.hotspot_ratio_x
             hy = size * self.cfg.hotspot_ratio_y
             draw_x = cx - hx
@@ -469,17 +509,21 @@ def _create_pyside6_backend(config: OverlayConfig) -> BaseOverlayBackend:
                 painter.setPen(QPen(QColor("#111111"), 2.5))
                 painter.drawPath(path)
 
-            # 3. Optional compact status pill ("AI" / "PAUSED")
+            # 3. Optional compact status pill ("AI" / "思考中" / "PAUSED")
             if self.cfg.show_label:
-                badge_text = "PAUSED" if self.state.status == "paused" else self.cfg.label_text
-                badge_bg = QColor("#EF4444" if self.state.status == "paused" else "#0F172A")
-                badge_bg.setAlpha(210)
-                badge_border = QColor("#FCA5A5" if self.state.status == "paused" else "#38BDF8")
-                badge_border.setAlpha(220)
+                if self.state.status == "paused":
+                    badge_text, bg_hex, bd_hex, bw = "PAUSED", "#EF4444", "#FCA5A5", 46
+                elif self.state.status == "thinking":
+                    badge_text, bg_hex, bd_hex, bw = "思考中", "#1E1B4B", "#A855F7", 42
+                else:
+                    badge_text, bg_hex, bd_hex, bw = self.cfg.label_text, "#0F172A", "#38BDF8", 24
+                badge_bg = QColor(bg_hex)
+                badge_bg.setAlpha(215)
+                badge_border = QColor(bd_hex)
+                badge_border.setAlpha(225)
 
                 bx = draw_x + size * 0.08
                 by = draw_y + size * 0.78
-                bw = 44 if self.state.status == "paused" else 24
                 bh = 15
                 painter.setPen(QPen(badge_border, 1.0))
                 painter.setBrush(badge_bg)
@@ -973,16 +1017,38 @@ def main() -> int:
         default="auto",
         help="Overlay rendering backend",
     )
-    parser.add_argument("--demo", action="store_true", help="Run a short visual movement & click demo")
+    parser.add_argument("--demo", action="store_true", help="Run a short visual movement, thinking spinner & click demo")
+    parser.add_argument("--always-on", action="store_true", help="Keep the virtual cursor visibly pinned on screen")
     args = parser.parse_args()
 
     if args.serve:
         return _serve_ipc(config_path=args.config, backend_name=args.backend)
 
+    if args.always_on:
+        cfg = AppConfig.load(args.config).overlay
+        overlay = create_overlay_backend(cfg, backend=args.backend)
+        try:
+            while True:
+                overlay.process_events()
+                time.sleep(0.02)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            overlay.close()
+        return 0
+
     if args.demo:
         cfg = AppConfig.load(args.config).overlay
         overlay = create_overlay_backend(cfg, backend=args.backend)
         try:
+            overlay.move_to(360, 260, duration=0.35, wait=True)
+            overlay.set_status("thinking")
+            end_think = time.monotonic() + 1.2
+            while time.monotonic() < end_think:
+                overlay.process_events()
+                time.sleep(0.016)
+            overlay.set_status("acting")
+
             for (tx, ty, btn, clks) in [
                 (300, 250, "left", 1),
                 (620, 420, "left", 2),

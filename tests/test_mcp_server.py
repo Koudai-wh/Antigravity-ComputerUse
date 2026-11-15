@@ -37,7 +37,7 @@ async def test_mcp_tools_end_to_end_dry_run() -> None:
         assert info_data["ok"] is True
         assert "monitors" in info_data
 
-        # 2. Take screenshot (when DISPLAY exists, verify real mss PNG capture)
+        # 2. Take screenshot & sequential video frames (when DISPLAY exists, verify real mss capture)
         if has_display:
             res_shot = await mcp.call_tool("take_screenshot", {"image_format": "png"})
             shot_meta = json.loads(res_shot.content[0].text)
@@ -46,6 +46,19 @@ async def test_mcp_tools_end_to_end_dry_run() -> None:
             raw = base64.b64decode(img_content.data)
             pil = Image.open(io.BytesIO(raw))
             assert pil.width > 0 and pil.height > 0
+
+            res_vid = await mcp.call_tool("take_video_frames", {"frame_count": 2, "interval_sec": 0.05})
+            vid_meta = json.loads(res_vid.content[0].text)
+            assert vid_meta["ok"] is True
+            assert vid_meta["frame_count"] == 2
+            assert len(res_vid.content) == 3
+
+        # 2b. Cursor status ('thinking') & Screen Sharing tool
+        r_think = await mcp.call_tool("set_cursor_status", {"status": "thinking"})
+        assert json.loads(r_think.content[0].text)["status"] == "thinking"
+
+        r_vnc = await mcp.call_tool("connect_screen_sharing", {"host": "192.168.64.2"})
+        assert json.loads(r_vnc.content[0].text)["ok"] is True
 
         # 3. Move cursor & click & double-click & drag & scroll
         r_move = await mcp.call_tool("move_cursor", {"x": 500, "y": 400})
