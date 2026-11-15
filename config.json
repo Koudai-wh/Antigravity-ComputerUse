@@ -1,0 +1,105 @@
+{
+  "server": {
+    "name": "antigravity-computer-use",
+    "transport": "stdio",
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "vlm": {
+    "base_url": "http://100.121.235:8000/v1",
+    "api_key": "EMPTY",
+    "model": "Qwen2.5-VL-7B-Instruct",
+    "model_preset": "qwen2.5-vl",
+    "coordinate_system": "normalized_1000",
+    "max_tokens": 1024,
+    "temperature": 0.1,
+    "timeout_seconds": 60
+  },
+  "display": {
+    "default_display_index": 1,
+    "screenshot_format": "png",
+    "jpeg_quality": 85,
+    "max_screenshot_width": 1920,
+    "normalized_range": 1000
+  },
+  "overlay": {
+    "enabled": true,
+    "cursor_image_path": "assets/virtual_cursor.png",
+    "cursor_size": 48,
+    "hotspot_ratio_x": 0.789,
+    "hotspot_ratio_y": 0.211,
+    "smooth_move": true,
+    "move_duration_sec": 0.35,
+    "fps": 60,
+    "opacity": 0.96,
+    "show_label": true,
+    "label_text": "AI",
+    "click_effect": {
+      "enabled": true,
+      "ripple_duration_ms": 450,
+      "ripple_max_radius": 38,
+      "left_color": "#00D4FF",
+      "right_color": "#FF9500",
+      "double_color": "#7C4DFF",
+      "scale_pulse": 0.82
+    },
+    "idle_fade_seconds": 0.0
+  },
+  "safety": {
+    "enforce_app_allowlist": true,
+    "unlisted_app_policy": "prompt",
+    "confirmation_timeout_sec": 20.0,
+    "always_allowed_apps": [
+      "Finder",
+      "Notes",
+      "TextEdit",
+      "Safari",
+      "Google Chrome",
+      "Visual Studio Code",
+      "Code",
+      "Preview",
+      "Calculator",
+      "explorer.exe",
+      "notepad.exe",
+      "chrome.exe",
+      "msedge.exe",
+      "Code.exe",
+      "calc.exe",
+      "mspaint.exe",
+      "firefox",
+      "gedit",
+      "xterm"
+    ],
+    "blocked_apps": [
+      "1Password",
+      "Keychain Access",
+      "Passwords",
+      "System Settings",
+      "System Preferences",
+      "Terminal",
+      "iTerm2",
+      "cmd.exe",
+      "powershell.exe",
+      "pwsh.exe",
+      "regedit.exe",
+      "Taskmgr.exe"
+    ],
+    "kill_switch": {
+      "enabled": true,
+      "esc_press_count": 2,
+      "esc_window_sec": 1.2,
+      "emergency_hotkey": ["ctrl", "alt", "shift", "x"]
+    },
+    "human_priority_lock": {
+      "enabled": true,
+      "mouse_move_threshold_px": 24,
+      "auto_resume_after_idle_sec": 0.0
+    }
+  },
+  "actions": {
+    "action_delay_sec": 0.05,
+    "clipboard_restore": true,
+    "paste_delay_sec": 0.08,
+    "scroll_multiplier": 120
+  }
+}
