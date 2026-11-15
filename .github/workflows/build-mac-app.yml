@@ -1,0 +1,47 @@
+name: Build Antigravity AI Studio (macOS)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Make scripts executable
+        run: chmod +x build_mac_app.sh launch_mac.command launch_linux.sh
+
+      - name: Run build_mac_app.sh
+        run: ./build_mac_app.sh
+
+      - name: Run pytest suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv/bin/pytest -v
+
+      - name: Verify bundled .app signature and startup
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          codesign --verify --deep --strict --verbose=2 "dist/Antigravity AI Studio.app"
+          "dist/Antigravity AI Studio.app/Contents/MacOS/Antigravity AI Studio" --smoke-test
+
+      - name: Archive Antigravity AI Studio.app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "dist/Antigravity AI Studio.app" "Antigravity-AI-Studio-macOS.zip"
+
+      - name: Upload macOS .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Antigravity-AI-Studio-macOS
+          path: Antigravity-AI-Studio-macOS.zip
+          retention-days: 30

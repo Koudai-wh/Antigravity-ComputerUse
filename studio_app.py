@@ -2179,16 +2179,23 @@ def main() -> int:
     parser.add_argument("--config", default=None, help="Path to config.json")
     parser.add_argument("--dry-run", action="store_true", help="Run without real OS input events")
     parser.add_argument("--no-auto-fetch", action="store_true", help="Do not query /v1/models on startup")
+    parser.add_argument("--smoke-test", action="store_true", help="Verify startup and exit immediately")
     args, _ = parser.parse_known_args()
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Antigravity AI Studio")
     win = AntigravityStudioWindow(
         config_path=args.config,
-        dry_run=args.dry_run,
-        auto_fetch_models=not args.no_auto_fetch,
+        dry_run=args.dry_run or args.smoke_test,
+        auto_fetch_models=(not args.no_auto_fetch) and (not args.smoke_test),
+        enable_resident_overlay=not args.smoke_test,
+        overlay_backend="headless" if args.smoke_test else "auto",
     )
     win.show()
+    if args.smoke_test:
+        app.processEvents()
+        win.close()
+        return 0
     return app.exec()
 
 
